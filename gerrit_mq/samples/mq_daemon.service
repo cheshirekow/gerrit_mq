@@ -1,0 +1,22 @@
+/etc/systemd/system/mq_daemon.service
+-----------------------------------------
+[Unit]
+Description=Gerrit Merge Serializer (Daemon)
+Requires=-.mount
+After=-.mount
+
+[Service]
+Type=simple
+User=mergequeue
+Group=mergequeue
+ExecStart=/home/mergequeue/gerrit_mq --config /home/mergequeue/config.py daemon
+Restart=on-failure
+RestartSec=30
+KillMode=process
+
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=mq_daemon
+
+[Install]
+WantedBy=multi-user.target

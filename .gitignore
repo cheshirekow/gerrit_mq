@@ -1,0 +1,11 @@
+
+*.pyc
+*.o
+*.so
+
+# unified repo tracking
+.gitu
+
+# qt creator
+*.qtc.*
+

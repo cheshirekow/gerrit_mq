@@ -1,0 +1,22 @@
+/etc/systemd/system/mq_webfront.service
+-----------------------------------------
+[Unit]
+Description=Gerrit Merge Serializer (Webfront)
+Requires=-.mount
+After=-.mount
+
+[Service]
+Type=simple
+User=mergequeue
+Group=mergequeue
+ExecStart=/home/mergequeue/gerrit_mq --config /home/mergequeue/config.py webfront
+Restart=on-failure
+RestartSec=30
+KillMode=process
+
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=mq_webfront
+
+[Install]
+WantedBy=multi-user.target

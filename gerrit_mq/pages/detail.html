@@ -1,0 +1,160 @@
+<html>
+  <head>
+    <title>Gerrit Merge Serializer</title>
+    <link rel="stylesheet"
+          href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css"
+          integrity="sha384-1q8mTJOASx8j1Au+a5WDVnPi2lkFfwwEAa8hDDdjZlpLegxhjVME1fgjWPGmkzs7"
+          crossorigin="anonymous" />
+    <link rel="stylesheet" href="style.css" />
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mustache.js/2.3.0/mustache.min.js" >
+      </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.2.1/jquery.min.js" >
+      </script>
+    <script src="script.js"></script>
+  </head>
+  <body>
+    <div class="navigation">
+      <ul>
+        <li> <a href="daemon.html">daemon status</a> </li>
+        <li> <a href="history.html">merge history</a> </li>
+        <li> <a href="queue.html">current queue</a> </li>
+      </ul>
+    </div>
+    <div class="content">
+
+
+<script id="cancel_tpl" type="text/template">
+<a href="" onclick="cancel_merge(event, {{rid}});">cancel</a>
+</script>
+
+<script id="table_tpl" type="text/template">
+  <h1>Merge Details</h1>
+  <table>
+  <tr>
+    <td>Merge #</td>
+    <td><a href="detail.html?merge_id={{rid}}">{{rid}}</a></td>
+  </tr>
+  <tr>
+    <td>Change ID</td>
+    <td><a href="{{gerrit_url}}/#/q/{{change_id}}">{{change_id}}</a></td>
+  </tr>
+  <tr>
+    <td>Feature Branch</td>
+    <td>{{feature_branch}}</td>
+  </tr>
+  <tr>
+    <td>Target Branch</td>
+    <td>{{branch}}</td>
+  </tr>
+  <tr>
+    <td>Owner</td>
+    <td></td>
+  </tr>
+  <tr class="{{result_class}}">
+    <td>Result</td>
+    <td>{{status}}</td>
+    <td>{{&cancel_btn}}</td>
+  </tr>
+  <tr>
+    <td>Queued At</td>
+    <td>{{request_time}}</td>
+  </tr>
+  <tr>
+    <td>Started Build At</td>
+    <td>{{start_time}}</td>
+  </tr>
+  <tr>
+    <td>Finished Build At</td>
+    <td>{{end_time}}</td>
+  </tr>
+  <tr>
+    <td>Time in queue</td>
+    <td>{{queue_duration}}</td>
+  </tr>
+  <tr>
+    <td>Time to process</td>
+    <td id='merge_duration'>{{merge_duration}}</td>
+  </tr>
+  <tr>
+    <td>Total turn around</td>
+    <td id='total_duration'>{{total_duration}}</td>
+  </tr>
+  </table>
+</script>
+
+
+<script>
+
+var page_context = {
+  active_div : 'stdout',
+  follow_stream : true,
+}
+
+$(document).ready(function(){
+  var query_obj = get_query_as_object();
+  page_context.follow_stream=query_obj.follow_stream;
+
+  console.log("Document ready, fetching data");
+  show_div(null, 'stdout');
+  fetch_details(query_obj.merge_id);
+
+  var log_ctx = null;
+  var stdout_ctx = null;
+  var stderr_ctx = null;
+});
+</script>
+
+<div id="table_div">
+</div>
+
+<ul>
+  <li><a href="#" onclick="set_follow(event, true);">click to follow streaming text</a></li>
+</ul>
+
+<ul class="nav nav-tabs">
+  <li>
+    <a href="#" onclick="show_div(event, 'log');">merge log</a>
+  </li>
+  <li>
+    <a href="#" onclick="show_div(event, 'stdout');">stdout</a>
+  </li>
+  <li>
+    <a href="#" onclick="show_div(event, 'stderr');">stderr</a>
+  </li>
+</ul>
+
+<a name="top"></a>
+
+
+<div id="log_div" class="log">
+  <h2>Merge Log</h2>
+  <p>&nbsp;&nbsp;&nbsp;&nbsp;
+    <a id="log_dl" href="" style="display: none;">[download]</a></p>
+  <pre id="log_pre"></pre>
+</div>
+
+<div id="stdout_div" class="log" style="display: none;">
+  <h2>Standard Output</h2>
+  <p>&nbsp;&nbsp;&nbsp;&nbsp;
+    <a id="stdout_dl" href="" style="display: none;">[download]</a></p>
+  <pre id="stdout_pre"></pre>
+</div>
+
+<div id="stderr_div" class="log" style="display: none;">
+  <h2>Standard Error</h2>
+  <p>&nbsp;&nbsp;&nbsp;&nbsp;
+    <a id="stderr_dl" href="" style="display: none;">[download]</a></p>
+  <pre id="stderr_pre"></pre>
+</div>
+
+<div>
+<ul>
+<li><a href="#" onclick="set_follow(event, false);">stop following</a></li>
+<li><a href="#top" onclick="set_follow(null, false);">back to top</a></li>
+</ul>
+</div>
+
+    </div>
+  </body>
+</html>
