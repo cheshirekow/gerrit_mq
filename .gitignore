@@ -9,3 +9,5 @@
 # qt creator
 *.qtc.*
 
+# cmake builds
+.build
