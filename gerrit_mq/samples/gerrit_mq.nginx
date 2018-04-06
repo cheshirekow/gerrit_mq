@@ -1,0 +1,23 @@
+server {
+  listen 80 default_server;
+  listen [::]:80 default_server;
+
+  index index.html index.htm index.nginx-debian.html;
+  server_name mergequeue;
+
+  location / {
+    root /home/mergequeue/pages;
+    try_files $uri $uri/ =404;
+  }
+
+  location /gmq/ {
+    proxy_pass http://localhost:8081;
+  }
+
+  location /logs {
+    gzip_static on;
+    alias /home/mergequeue/logs;
+    autoindex on;
+    try_files $uri $uri/ =404;
+  }
+}

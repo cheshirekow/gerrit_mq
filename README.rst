@@ -1,0 +1,1 @@
+gerrit_mq/doc/README.rst

@@ -64,6 +64,7 @@ ZIP_MANIFEST = [
     'gerrit_mq/webfront.py',
     'gerrit_mq/templates/daemon.html.tpl',
     'gerrit_mq/templates/detail.html.tpl',
+    'gerrit_mq/templates/detail_body.html.tpl',
     'gerrit_mq/templates/history.html.tpl',
     'gerrit_mq/templates/index.html.tpl',
     'gerrit_mq/templates/layout.html.tpl',

@@ -2,11 +2,13 @@
 
 import datetime
 import cStringIO
+import logging
 import os
 
 import flask
 
 from gerrit_mq import orm
+from gerrit_mq import functions
 
 HTML_ESCAPE_TABLE = {
     "&": "&amp;",
@@ -86,6 +88,8 @@ class Webfront(flask.Flask):
     self.secret_key = mq_config['webfront.secret_key']
 
     self.add_url_rule('/gmq/cancel_merge', 'cancel_merge', self.cancel_merge)
+    self.add_url_rule('/gmq/get_active_merge_status', 'get_active_merge_status',
+                      self.get_active_merge_status)
     self.add_url_rule('/gmq/get_queue', 'get_queue', self.get_queue)
     self.add_url_rule('/gmq/get_history', 'get_history', self.get_history)
     self.add_url_rule('/gmq/get_merge_status', 'get_merge_status',
@@ -94,6 +98,8 @@ class Webfront(flask.Flask):
                       self.get_daemon_status)
     self.add_url_rule('/gmq/set_daemon_pause', 'set_daemon_pause',
                       self.set_daemon_pause)
+
+    logging.info('Initialized webfront app')
 
   def get_queue(self):
     """
@@ -106,16 +112,18 @@ class Webfront(flask.Flask):
     `limit` : maximum number of records to return
     """
 
-    # project_filter, branch_filter, offset, limit \
-    #     = extract_common_args(flask.request.args)
-    #
-    # sql = self.sql_factory()
-    # result = functions.get_queue(sql, project_filter, branch_filter, offset,
-    #                              limit)
-    # sql.close()
+    project_filter, branch_filter, offset, limit \
+        = extract_common_args(flask.request.args)
 
-    request_queue = [ci.as_dict() for ci in self.gerrit.get_merge_requests()]
-    return flask.jsonify(count=len(request_queue), result=request_queue)
+    sql = self.sql_factory()
+    count, result_list = functions.get_queue(sql, project_filter, branch_filter,
+                                             offset, limit)
+    sql.close()
+    return flask.jsonify(count=count,
+                         result=[ci.as_dict() for ci in result_list])
+
+    # request_queue = [ci.as_dict() for ci in self.gerrit.get_merge_requests()]
+    # return flask.jsonify(count=len(request_queue), result=request_queue)
 
   def get_history(self):
     """
@@ -138,7 +146,7 @@ class Webfront(flask.Flask):
     if branch_filter is not None:
       query = query.filter(orm.MergeStatus.branch.like(branch_filter))
 
-    query = query.order_by(orm.MergeStatus.end_time.desc())
+    query = query.order_by(orm.MergeStatus.rid.desc())
     count = query.count()
 
     if offset > 0:
@@ -147,9 +155,19 @@ class Webfront(flask.Flask):
     if limit > 0:
       query = query.limit(limit)
 
+    result = []
+    for merge_sql in list(query):
+      merge_json = merge_sql.as_dict()
+      query = (sql.query(orm.MergeChange)
+               .join(orm.MergeChange.owner)
+               .filter(orm.MergeChange.merge_id == merge_sql.rid))
+      merge_json['changes'] = []
+      for change_sql in query:
+        merge_json['changes'].append(change_sql.as_dict())
+      result.append(merge_json)
+
     response = flask.jsonify(dict(count=count,
-                                  result=[ms_sql.as_dict()
-                                          for ms_sql in query]))
+                                  result=result))
     sql.close()
     return response
 
@@ -179,16 +197,58 @@ class Webfront(flask.Flask):
                .query(orm.MergeStatus).order_by(orm.MergeStatus.rid.desc())
                .limit(1))
 
-    for ms_sql in query:
-      response = flask.jsonify(ms_sql.as_dict())
+    if query.count() < 1:
       sql.close()
+      response = flask.jsonify({'status': 'ERROR',
+                                'reason': "rid doesn't exist in db"})
+      response.status_code = 404
       return response
 
+    record_sql = query.first()
+    record_json = record_sql.as_dict()
+    record_json['changes'] = []
+
+    query = (sql.query(orm.MergeChange)
+             .filter(orm.MergeChange.merge_id == query_rid)
+             .order_by(orm.MergeChange.request_time))
+    for change_sql in query:
+      record_json['changes'].append(change_sql.as_dict())
+
     sql.close()
-    response = flask.jsonify({'status': 'ERROR',
-                              'reason': "rid doesn't exist in db"})
-    response.status_code = 404
-    return response
+
+    return flask.jsonify(record_json)
+
+  def get_active_merge_status(self):
+    """
+    Return json-encoded MergeStatus for a single merge
+
+    Query params:
+      `rid` : row id of the status to retrieve
+    """
+    sql = self.sql_factory()
+    query = (sql
+             .query(orm.MergeStatus)
+             # .filter(orm.MergeStatus.status
+             #         == orm.StatusKey.IN_PROGRESS.value)
+             .order_by(orm.MergeStatus.rid.desc())
+             .limit(1))
+
+    if query.count() < 1:
+      sql.close()
+      return flask.jsonify({})
+
+    record_sql = query.first()
+    record_json = record_sql.as_dict()
+    record_json['changes'] = []
+
+    query = (sql.query(orm.MergeChange)
+             .filter(orm.MergeChange.merge_id == record_sql.rid)
+             .order_by(orm.MergeChange.request_time))
+    for change_sql in query:
+      record_json['changes'].append(change_sql.as_dict())
+
+    sql.close()
+    return flask.jsonify(record_json)
 
   def cancel_merge(self):
     """
@@ -211,7 +271,7 @@ class Webfront(flask.Flask):
     if query.count() > 0:
       sql.close()
       return flask.jsonify({'status': 'SUCCESS',
-                            'note' : 'Already Canceled in DB'})
+                            'note': 'Already Canceled in DB'})
 
     row = orm.Cancellation(rid=query_rid, when=datetime.datetime.utcnow(),
                            who='Webfront')
@@ -235,9 +295,9 @@ class Webfront(flask.Flask):
         pass
 
     status = {
-        'alive' : os.path.exists('/proc/{}/stat'.format(daemon_pid)),
-        'paused' : os.path.exists(pausefile_path),
-        'pid' : daemon_pid,
+        'alive': os.path.exists('/proc/{}/stat'.format(daemon_pid)),
+        'paused': os.path.exists(pausefile_path),
+        'pid': daemon_pid,
     }
 
     return flask.jsonify(status)

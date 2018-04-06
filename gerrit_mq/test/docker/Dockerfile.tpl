@@ -31,7 +31,6 @@ ADD gerrit.config $GERRIT_HOME/gerrit/etc/gerrit.config
 ADD gerrit.war ${GERRIT_WAR}
 ADD ssh ${GERRIT_HOME}/.ssh
 ADD start.sh ${GERRIT_HOME}/start.sh
-# ADD secure.config $GERRIT_HOME/gerrit/etc/secure.config
 
 RUN chown -R ${GERRIT_USER}:${GERRIT_USER} ${GERRIT_HOME} \
     && chmod 700 ${GERRIT_HOME}/.ssh \
@@ -53,19 +52,6 @@ RUN java -jar $GERRIT_WAR init --batch -d ${GERRIT_HOME}/gerrit
 RUN java -jar $GERRIT_WAR reindex -d ${GERRIT_HOME}/gerrit
 
 USER root
-
-# Gerrit will generate a self-signed certificate as part of --batch init, but
-# it will generate and use a random ssl key, overwriting the one we provided in
-# secure.config. We need to re-addsecure.config so that gerrit knows the
-# password for the keystore.
-# Copy keystore file with temporary SSL cert.  Cert was generated with:
-#   keytool -keystore keystore -alias jetty -genkey -keyalg RSA
-# ENV GERRIT_KEYSTORE $GERRIT_HOME/gerrit/etc/keystore
-# ADD keystore ${GERRIT_KEYSTORE}
-# ADD secure.config $GERRIT_HOME/gerrit/etc/secure.config
-
-# RUN chown -R ${GERRIT_USER}:${GERRIT_USER} ${GERRIT_KEYSTORE}
-
 
 # initialize gerrit
 # ------------------------
@@ -95,6 +81,6 @@ RUN rm -rf ${GERRIT_HOME}/init_db.sql \
            ${GERRIT_HOME}/init_gerrit.py \
            ${GERRIT_HOME}/all_projects.config
 
-EXPOSE 8443 29418
+EXPOSE 8081 29418
 USER gerrit2
 ENTRYPOINT ["/home/gerrit2/start.sh"]

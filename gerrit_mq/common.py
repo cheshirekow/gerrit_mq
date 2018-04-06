@@ -75,6 +75,7 @@ def is_valid_changeinfo(json_dict):
       return False
   return True
 
+
 GERRIT_TIME_SHORT_FMT = '%Y-%m-%d %H:%M:%S'
 GERRIT_TIME_FMT = '%Y-%m-%d %H:%M:%S.%f'
 
@@ -93,6 +94,8 @@ def sort_merge_queue_labels(label_entries):
     # if a user sets the value of the Merge-Queue label to 0 the date is
     # removed
     if 'date' not in label_entry:
+      continue
+    if 'value' not in label_entry:
       continue
 
     # strip trailing zeros so that strptime doesn't complain
@@ -150,7 +153,8 @@ class AccountInfo(object):  # pylint: disable=no-init
   Information about a gerrit user
   """
 
-  def __init__(self, _account_id, username, name, email):
+  def __init__(self, _account_id, username, name, email,
+               rid=None):  # pylint:disable=unused-argument
     self.account_id = _account_id
     self.username = username
     self.name = name
@@ -168,7 +172,7 @@ class ChangeInfo(object):
   Information about a gerrit change
   """
 
-  def __init__(self, project, branch, # pylint: disable=unused-argument
+  def __init__(self, project, branch,  # pylint: disable=unused-argument
                change_id, subject, current_revision, owner, queue_time,
                queue_score, message_meta=None, **kwargs):
     self.project = project
@@ -181,13 +185,20 @@ class ChangeInfo(object):
       self.message_meta = {}
     else:
       self.message_meta = dict(message_meta)
-    self.queue_time = queue_time
+    if isinstance(queue_time, datetime.datetime):
+      self.queue_time = queue_time
+    elif isinstance(queue_time, str) or isinstance(queue_time, unicode):
+      self.queue_time = datetime.datetime.strptime(queue_time,
+                                                   GERRIT_TIME_SHORT_FMT)
+    else:
+      raise ValueError('Unrecognized queue_time type of {}'
+                       .format(type(queue_time)))
     self.queue_score = queue_score
 
   def as_dict(self):
     result = {key: getattr(self, key) for key
               in ['project', 'branch', 'subject', 'current_revision', 'owner',
-                  'message_meta', 'change_id']}
+                  'message_meta', 'change_id', 'queue_time']}
     result['owner'] = self.owner.as_dict()
     result['queue_time'] = self.queue_time.strftime(GERRIT_TIME_SHORT_FMT)
     return result
@@ -199,15 +210,12 @@ class ChangeInfo(object):
     except ImportError:
       return json.dumps(self.as_dict(), indent=2, sort_keys=True)
 
-
   @staticmethod
   def key(changeinfo):
 
     return (changeinfo.message_meta.get('Priority', 100),
             changeinfo.queue_time, changeinfo.project,
             changeinfo.change_id)
-
-
 
 
 class GerritRest(pygerrit2.rest.GerritRestAPI):
@@ -222,6 +230,10 @@ class GerritRest(pygerrit2.rest.GerritRestAPI):
     auth = requests.auth.HTTPDigestAuth(username, password)
     verify = (not disable_ssl_certificate_validation)
     super(GerritRest, self).__init__(url=url, auth=auth, verify=verify)
+
+    if disable_ssl_certificate_validation:
+      from requests.packages import urllib3
+      urllib3.disable_warnings()
 
   def get_merge_requests(self, offset=0, limit=25, filters=None):
     """
@@ -298,9 +310,8 @@ class GerritRest(pygerrit2.rest.GerritRestAPI):
         changeinfo_list.append(ChangeInfo(**json_dict))
       else:
         logging.info('Skipping change %s with resolved '
-                     'Merque-Queue label of %d',
+                     'Merge-Queue label of %d',
                      json_dict['change_id'], queue_score)
-
 
     if len(changeinfo_list) == 0:
       return []
@@ -310,11 +321,10 @@ class GerritRest(pygerrit2.rest.GerritRestAPI):
     # change
     return sorted(changeinfo_list, key=ChangeInfo.key)
 
-  def get_change(self, change_id):
+  def get_changeinfo(self, change_id):
     """
     Return the ChangeInfo object for a particular change id
     """
-
 
     query = urllib.urlencode([('o', 'CURRENT_REVISION'),
                               ('o', 'LABELS'),
@@ -328,6 +338,10 @@ class GerritRest(pygerrit2.rest.GerritRestAPI):
       logging.error(json.dumps(json_dict, sort_keys=True, indent=2,
                                separators=(',', ': ')))
       return None
+    return json_dict
+
+  def get_change(self, change_id):
+    json_dict = self.get_changeinfo(change_id)
 
     mq_labels = (json_dict
                  .get('labels', {})
@@ -340,6 +354,32 @@ class GerritRest(pygerrit2.rest.GerritRestAPI):
     json_dict['queue_score'] = queue_score
     return ChangeInfo(**json_dict)
 
+  def get_changes_canceled_on_gerrit(self, change_queue):
+    """
+    Retrieve updated changeinfo objects for each change in change_queue and
+    return a list of ``change_id`` objects for all changes that have been
+    canceled.
+    """
+
+    changes_str = ' OR '.join('change:{}'.format(changeinfo.change_id)
+                              for changeinfo in change_queue)
+    search_query = ("project:{project} AND branch:{branch} AND ({change_list})"
+                    .format(project=change_queue[0].project,
+                            branch=change_queue[0].branch,
+                            change_list=changes_str))
+    query_string = urllib.urlencode([('q', search_query),
+                                     ('o', 'DETAILED_LABELS')])
+    canceled_ids = []
+    for changeinfo in self.get('changes/?' + query_string):
+      mq_labels = (changeinfo
+                   .get('labels', {})
+                   .get('Merge-Queue', {})
+                   .get('all', []))
+      sorted_labels = sort_merge_queue_labels(mq_labels)
+      _, queue_score = get_resolved_merge_queue_score(sorted_labels)
+      if queue_score != 1:
+        canceled_ids.append(changeinfo['change_id'])
+    return canceled_ids
 
   def get_message_meta(self, change_id, revision):
     """
@@ -385,14 +425,13 @@ class GerritRest(pygerrit2.rest.GerritRestAPI):
 
     try:
       if author_id is not None:
-        return self.post(request_url, json={'on_behalf_of' : author_id})
+        return self.post(request_url, json={'on_behalf_of': author_id})
       else:
         return self.post(request_url)
 
     except requests.RequestException:
       logging.exception('Failed to set review score for change %s', change_id)
       return None
-
 
   def set_review(self, change_id, current_revision, review_dict):
     """

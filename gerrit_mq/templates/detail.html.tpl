@@ -1,66 +1,5 @@
 {% extends "layout.html.tpl" %}
 {% block content %}
-{% raw %}
-<script id="cancel_tpl" type="text/template">
-<a href="" onclick="cancel_merge(event, {{rid}});">cancel</a>
-</script>
-
-<script id="table_tpl" type="text/template">
-  <h1>Merge Details</h1>
-  <table>
-  <tr>
-    <td>Merge #</td>
-    <td><a href="detail.html?merge_id={{rid}}">{{rid}}</a></td>
-  </tr>
-  <tr>
-    <td>Change ID</td>
-    <td><a href="{{gerrit_url}}/#/q/{{change_id}}">{{change_id}}</a></td>
-  </tr>
-  <tr>
-    <td>Feature Branch</td>
-    <td>{{feature_branch}}</td>
-  </tr>
-  <tr>
-    <td>Target Branch</td>
-    <td>{{branch}}</td>
-  </tr>
-  <tr>
-    <td>Owner</td>
-    <td></td>
-  </tr>
-  <tr class="{{result_class}}">
-    <td>Result</td>
-    <td>{{status}}</td>
-    <td>{{&cancel_btn}}</td>
-  </tr>
-  <tr>
-    <td>Queued At</td>
-    <td>{{request_time}}</td>
-  </tr>
-  <tr>
-    <td>Started Build At</td>
-    <td>{{start_time}}</td>
-  </tr>
-  <tr>
-    <td>Finished Build At</td>
-    <td>{{end_time}}</td>
-  </tr>
-  <tr>
-    <td>Time in queue</td>
-    <td>{{queue_duration}}</td>
-  </tr>
-  <tr>
-    <td>Time to process</td>
-    <td id='merge_duration'>{{merge_duration}}</td>
-  </tr>
-  <tr>
-    <td>Total turn around</td>
-    <td id='total_duration'>{{total_duration}}</td>
-  </tr>
-  </table>
-</script>
-{% endraw %}
-
 <script>
 
 var page_context = {
@@ -68,7 +7,7 @@ var page_context = {
   follow_stream : true,
 }
 
-$(document).ready(function(){
+on_ready(function(){
   var query_obj = get_query_as_object();
   page_context.follow_stream=query_obj.follow_stream;
 
@@ -82,12 +21,16 @@ $(document).ready(function(){
 });
 </script>
 
-<div id="table_div">
+<div>
+  <h1>Merge Details</h1>
+  {% include "detail_body.html.tpl" %}
 </div>
 
-<ul>
-  <li><a href="#" onclick="set_follow(event, true);">click to follow streaming text</a></li>
-</ul>
+<hr/>
+<div>
+  <p><a href="#" onclick="set_follow(event, true);">
+        click to follow streaming text</a></p>
+</div>
 
 <ul class="nav nav-tabs">
   <li>

@@ -192,8 +192,7 @@ class Master(flask.Flask):
     query = (sql
              .query(sqlalchemy.func.min(orm.ChangeInfo.query_time))
              .group_by(orm.ChangeInfo.project, orm.ChangeInfo.branch)
-             .order_by(orm.ChangeInfo.query_time.desc())
-            )
+             .order_by(orm.ChangeInfo.query_time.desc()))
 
     builder_queues = []
     for ci_sql in query:

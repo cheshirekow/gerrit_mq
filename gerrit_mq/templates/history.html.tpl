@@ -1,35 +1,33 @@
 {% extends "layout.html.tpl" %}
 {% block content %}
-{% raw %}
-<script id="row_tpl" type="text/template">
-  <td><a href="/detail.html?merge_id={{rid}}">{{rid}}</a></td>
-  <td><a href="{{gerrit_url}}/#/q/{{change_id}}">{{change_id}}</a></td>
-  <td>{{feature_branch}}</td>
-  <td>{{branch}}</td>
-  <td>{{owner.name}}</td>
-  <td>{{status}}</td>
-  <td>{{request_time}}</td>
-  <td>{{queue_duration}}</td>
-  <td>{{merge_duration}}</td>
-</script>
-{% endraw %}
 
 <script>
-$(document).ready(history_page_ready);
+on_ready(history_page_ready);
 </script>
 
+<div id="current_merge_div" style="display: none;">
+  <h1>Active Merge</h1>
+  {% include "detail_body.html.tpl" %}
+</div>
+
+
+<h1>Merge History</h1>
 <p>Note: click the merge id to see the details page</p>
-<table id='history_table'>
+<table>
 <tr>
-  <th>Merge #</th>
-  <th>Change ID</th>
-  <th>Feature Branch</th>
-  <th>Target Branch</th>
-  <th>Owner</th>
-  <th>Result</th>
-  <th>Queued At</th>
-  <th>Queued For</th>
-  <th>Build Duration</th>
+  <thead>
+    <th>Merge #</th>
+    <th>Target Branch</th>
+    <th>Change ID</th>
+    <th>Feature Branch</th>
+    <th>Owner</th>
+    <th>Queued At</th>
+    <th>Queued For</th>
+    <th>Result</th>
+    <th>Build Duration</th>
+  </thead>
+  <tbody id='history_table'>
+  </tbody>
 </tr>
 
 </table>

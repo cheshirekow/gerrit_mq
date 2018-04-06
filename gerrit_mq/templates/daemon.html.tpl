@@ -3,7 +3,7 @@
 
 
 <script>
-$(document).ready(daemon_page_ready);
+on_ready(daemon_page_ready);
 </script>
 
 <div id="table_div">

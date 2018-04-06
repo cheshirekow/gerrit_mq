@@ -1,9 +1,14 @@
+#!/usr/bin/env python
+# PYTHON_ARGCOMPLETE_OK
+
 from __future__ import print_function
 import argparse
+import io
 import inspect
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -12,6 +17,7 @@ import time
 import traceback
 
 from gerrit_mq import common
+from gerrit_mq import functions
 from gerrit_mq.test import automation
 from gerrit_mq.test import gerrit_docker
 
@@ -61,11 +67,15 @@ class Command(object):
                        .format(getattr(cls, '__name__', '??')))
 
 class GerritDocker(Command):
+  """
+  build docker image or start/stop/rm docker container
+  """
+
   @staticmethod
   def setup_parser(parser):
     subparsers = parser.add_subparsers(
         help='build the test image, or control the test container',
-        dest='command')
+        dest='subcommand')
 
     build_parser = subparsers.add_parser('build', help='build an image')
     build_parser.add_argument(
@@ -95,15 +105,17 @@ class GerritDocker(Command):
 
   @classmethod
   def run_args(cls, config, args):  # pylint: disable=unused-argument
-    if args.command == 'build':
+    if args.subcommand == 'build':
       gerrit_docker.build_image(args.build_dir, args.gerrit_version, args.uid,
                                 args.no_rm)
-    elif args.command == 'start':
+    elif args.subcommand == 'start':
       gerrit_docker.start_container(args.debug, args.dry_run)
-    elif args.command == 'stop':
+    elif args.subcommand == 'stop':
       gerrit_docker.stop_container()
-    elif args.command == 'rm':
+    elif args.subcommand == 'rm':
       gerrit_docker.remove_container()
+    else:
+      logging.warn('Unrecognized subcommand: %s', args.subcommand)
 
 
 class StartNginx(Command):
@@ -112,12 +124,30 @@ class StartNginx(Command):
   pages from the webroot and logs from the logdirectory.
   """
 
+  @staticmethod
+  def setup_parser(parser):
+    parser.add_argument('docroot', nargs='?', default=None,
+                        help='Document root')
+
   @classmethod
   def run_args(cls, config, args):
     this_dir = os.path.realpath(os.path.dirname(__file__))
+
+    docroot = config['webfront.pagedir_path']
+    if docroot is None:
+      docroot = args.docroot
+
+    docroot_is_temp = False
+    if docroot is None:
+      docroot = tempfile.mkdtemp()
+      docroot_is_temp = True
+
+    logging.info("Rendering templates in %s", docroot)
+    functions.render_templates(config, docroot)
+
     tpl_args = dict(
-        pagedir_path=os.path.realpath(os.path.join(this_dir, '..', 'pages')),
         logdir_path=config['log_path'],
+        pagedir_path=docroot,
         webfront_port=config['webfront.listen.port']
     )
 
@@ -158,6 +188,8 @@ class StartNginx(Command):
       logging.error('Config was:\n' + ''.join(lines))
 
     os.remove(tmpfile_path)
+    if docroot_is_temp:
+      shutil.rmtree(docroot)
     sys.exit(nginx_proc.returncode)
 
 
@@ -169,8 +201,11 @@ class CreateReviews(Command):
 
   @staticmethod
   def setup_parser(subparser):
-    subparser.add_argument('num_features', type=int,
-                           help='Number of feature branches to create/submit')
+    subparser.add_argument('--user', default='test1',
+                           help='username to submit as')
+    subparser.add_argument('--identity', default=None,
+                           help='ssh identity file used to authenticate as '
+                                'user')
     subparser.add_argument('--approve', action='store_true',
                            help='Mark the changes as approved')
     subparser.add_argument('--queue', action='store_true',
@@ -179,16 +214,34 @@ class CreateReviews(Command):
                            help="don't delete the clone from the local FS")
     subparser.add_argument('--repo-path', default=None,
                            help='clone the test repo to this location')
+    subparser.add_argument('--branch', default='master',
+                           help='target branch')
+    subparsers = subparser.add_subparsers(dest='subcommand')
+    simple = subparsers.add_parser('simple')
+    simple.add_argument('num_features', type=int,
+                        help='Number of feature branches to create/submit')
+
+    pass_fail = subparsers.add_parser('pass-fail')
+    pass_fail.add_argument('changes', nargs='+', choices=['P', 'F'])
+
 
   @classmethod
   def run_args(cls, config, args):
     if args.queue:
       args.approve = True
+    if args.repo_path is not None:
+      args.keep_clone = True
 
     config['gerrit.rest.username'] = 'test1'
+    config['gerrit.ssh.username'] = 'test1'
     gerrit = common.GerritRest(**config['gerrit.rest'])
-    automation.create_reviews(config, gerrit, args)
 
+    if args.subcommand == 'simple':
+      automation.create_reviews(config, gerrit, args)
+    elif args.subcommand == 'pass-fail':
+      automation.create_pass_fail(config, gerrit, args)
+    else:
+      logging.error('Unrecognized subcommand %s', args.subcommand)
 
 
 def iter_command_classes():
@@ -205,10 +258,10 @@ def iter_command_classes():
 
 def main(argv):
   parser = argparse.ArgumentParser(prog="gerrit-mq/test", description=__doc__)
-  parser.add_argument('-c', '--config-path',
+  parser.add_argument('-c', '--config',
                       default=os.path.expanduser('~/.gerrit-mq.py'),
                       help='path to config file')
-  parser.add_argument('-l', '--log-level', default='warning',
+  parser.add_argument('-l', '--log-level', default='info',
                       choices=['debug', 'info', 'warning', 'error'])
   subparsers = parser.add_subparsers(dest='command')
   commands = [init() for init in iter_command_classes()]
@@ -232,21 +285,19 @@ def main(argv):
                       datefmt='%Y-%m-%d %H:%M:%S',
                       filemode='w')
 
-  assert os.path.exists(args.config_path), (
-      "The requested config file {} does not exist".format(args.config_path))
+  assert os.path.exists(args.config), (
+      "The requested config file {} does not exist".format(args.config))
 
   try:
-    globals_ = globals()
-    execfile(args.config_path, globals_)
+    globals_ = {}
+    with io.open(args.config, 'r', encoding='utf-8') as infile:
+      exec(infile.read(), globals_)  # pylint: disable=W0122
   except:  # pylint: disable=bare-except
     traceback.print_exc()
     sys.stderr.write('Failed to execute config file\n')
     return 1
 
-  assert 'CONFIG' in globals_, (
-      "Configuration file must define CONFIG dictionary")
-
-  config = common.ConfigDict(globals_['CONFIG'])
+  config = common.ConfigDict(globals_)
   for command in commands:
     if args.command == command.get_cmd():
       return command.run_args(config, args)

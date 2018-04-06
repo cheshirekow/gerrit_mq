@@ -43,9 +43,8 @@ class Cancellation(Base):   # pylint: disable=no-init
   # who canceled
   who = Column(String)
 
-  # when teh cancellation happened
+  # when the cancellation happened
   when = Column(DateTime)
-
 
 
 class Builder(Base):  # pylint: disable=no-init
@@ -78,7 +77,6 @@ class Builder(Base):  # pylint: disable=no-init
     return result
 
 
-
 class MergeStatusV0p1p0(Base):  # pylint: disable=no-init
   """
   Stores information about a merge attempt. This structure is serialized
@@ -102,11 +100,11 @@ class MergeStatusV0p1p0(Base):  # pylint: disable=no-init
     return ('<MergeResult(id="{}")>').format(self.id)
 
 
-class MergeStatus(Base):  # pylint: disable=no-init
+class MergeStatusV0p2p0(Base):  # pylint: disable=no-init
   """
   Data about an attempt to complete a merge.
   """
-  __tablename__ = 'merge_history'
+  __tablename__ = 'merge_history_v0p2p0'
   __table_args__ = {'sqlite_autoincrement': True}
 
   # row/record id
@@ -163,10 +161,110 @@ class MergeStatus(Base):  # pylint: disable=no-init
     if hasattr(self, 'owner') and isinstance(self.owner, AccountInfo):
       result['owner'] = self.owner.as_dict()
     else:
-      result['owner'] = {'rid' : self.owner_id,
-                         'name' : '<unknown>',
-                         'email' : '<unknown>',
-                         'username' : '<unknown>'}
+      result['owner'] = {'rid': self.owner_id,
+                         'name': '<unknown>',
+                         'email': '<unknown>',
+                         'username': '<unknown>'}
+
+    return result
+
+
+class MergeStatus(Base):  # pylint: disable=no-init
+  """
+  Data about an attempt to complete a merge.
+  """
+  __tablename__ = 'merge_history'
+  __table_args__ = {'sqlite_autoincrement': True}
+
+  # row/record id
+  rid = Column(Integer, primary_key=True)
+
+  # the name of the project
+  project = Column(String, index=True)
+
+  # the name of the target branch
+  branch = Column(String, index=True)
+
+  # time that the daemon actually started the merge
+  start_time = Column(DateTime)
+
+  # time that the daemon completed the merge
+  end_time = Column(DateTime)
+
+  # status of the merge. See values in the StatusKey enum.
+  status = Column(Integer)
+
+  def __repr__(self):
+    return ('<MergeStatus(id="{}", gerrit_id="{}/{}">'
+            .format(self.rid, self.project, self.branch))
+
+  def as_dict(self):
+    result = {key: getattr(self, key) for key
+              in ['rid', 'project', 'branch', 'status']}
+
+    for key in ['start_time', 'end_time']:
+      result[key] = getattr(self, key).strftime(GERRIT_TIME_SHORT_FMT)
+
+    return result
+
+
+class MergeChange(Base):  # pylint: disable=no-init
+  """
+  Information about one change that was part of one merge attempt
+  """
+
+  __tablename__ = 'merge_changes'
+  __table_args__ = {'sqlite_autoincrement': True}
+
+  # row/record id
+  rid = Column(Integer, primary_key=True)
+
+  # row/record id of the merge that this change was a part of
+  merge_id = Column(Integer, ForeignKey('merge_history.rid'))
+  merge = relationship("MergeStatus")
+
+  # rid of AccountInfo table
+  owner_id = Column(Integer, ForeignKey('account_info.rid'))
+  owner = relationship('AccountInfo')
+
+  # gerrit change id
+  change_id = Column(String)
+
+  # time on the gerrit server of the first MQ+1 after the last MQ-1
+  request_time = Column(DateTime)
+
+  # extracted 'Feature-Branch' from message headers
+  feature_branch = Column(String)
+
+  # Additional non-indexed information as a json object. Includes things
+  # like feature-branch, target-branch, etc.
+  msg_meta = Column(String)
+
+  def __repr__(self):
+    return ('<MergeChange(id="{}", gerrit_id="{}">'
+            .format(self.rid, self.change_id))
+
+  def as_dict(self):
+    result = {key: getattr(self, key) for key
+              in ['rid', 'change_id', 'merge_id', 'owner_id']}
+
+    for key in ['request_time']:
+      result[key] = getattr(self, key).strftime(GERRIT_TIME_SHORT_FMT)
+
+    if self.msg_meta is None:
+      result['metadata'] = {}
+    else:
+      result['metadata'] = json.loads(self.msg_meta)
+
+    if hasattr(self, 'owner') and isinstance(self.owner, AccountInfo):
+      result['owner'] = self.owner.as_dict()
+    else:
+      result['owner'] = {'rid': self.owner_id}
+
+    if hasattr(self, 'merge') and isinstance(self.merge, MergeStatus):
+      result['merge'] = self.merge.as_dict()
+    else:
+      result['merge'] = {'rid': self.merge_id}
 
     return result
 
@@ -196,8 +294,10 @@ class AccountInfo(Base):  # pylint: disable=no-init
             .format(self.rid, self.username))
 
   def as_dict(self):
-    return {key: getattr(self, key) for key
-            in ['rid', 'name', 'email', 'username']}
+    result = {key: getattr(self, key) for key
+              in ['rid', 'name', 'email', 'username']}
+    result['_account_id'] = self.rid
+    return result
 
 
 class ChangeInfo(Base):  # pylint: disable=no-init
@@ -205,30 +305,20 @@ class ChangeInfo(Base):  # pylint: disable=no-init
   Local cache of gerrit ChangeInfo objects to reduce the number of gerrit
   REST hits that we have to make.
   """
-  __tablename__ = 'change_info'
+  __tablename__ = 'change_queue'
   __table_args__ = {'sqlite_autoincrement': True}
 
   # row/record id
   rid = Column(Integer, primary_key=True)
-
-  # unique identifier for when this change info was cached
-  poll_id = Column(Integer, index=True)
-
-  # time on the gerrit server of the first MQ+1 after the last MQ-1
-  queue_time = Column(DateTime)
-
-  # merge priority. 0 is highest priority, 100 is default priority. Lower
-  # value has higher priority.
-  priority = Column(Integer)
-
-  # gerrit change id
-  change_id = Column(String, index=True)
 
   # the name of the project
   project = Column(String, index=True)
 
   # the name of the target branch
   branch = Column(String, index=True)
+
+  # gerrit change id
+  change_id = Column(String)
 
   # header line of the commit message
   subject = Column(String)
@@ -237,11 +327,25 @@ class ChangeInfo(Base):  # pylint: disable=no-init
   current_revision = Column(String)
 
   # id of the owner AccountInfo (in account_info table)
-  owner = Column(Integer, ForeignKey('account_info.rid'))
+  owner_id = Column(Integer, ForeignKey('account_info.rid'))
+  owner = relationship('AccountInfo')
 
   # json-encoded dictionary of any metadata stored in colon-tags in the
   # commit message.
   message_meta = Column(String)
+
+  # time on the gerrit server of the first MQ+1 after the last MQ-1
+  queue_time = Column(DateTime)
+
+  # resolved queue score after evaluating label order
+  queue_score = Column(Integer)
+
+  # unique identifier for when this change info was cached
+  poll_id = Column(Integer, index=True)
+
+  # merge priority. 0 is highest priority, 100 is default priority. Lower
+  # value has higher priority.
+  priority = Column(Integer, index=True)
 
   def __repr__(self):
     return ('<ChangeInfo(change_id="{}/{}/{}")>'
@@ -249,11 +353,36 @@ class ChangeInfo(Base):  # pylint: disable=no-init
 
   def as_dict(self):
     result = {key: getattr(self, key) for key
-              in ['rid', 'change_id', 'current_revision', 'priority',
-                  'project', 'branch', 'owner', 'subject']}
+              in ['rid', 'project', 'branch', 'change_id', 'subject',
+                  'current_revision', 'queue_score', 'poll_id', 'priority']}
+    result['owner'] = self.owner.as_dict()
     result['queue_time'] = self.queue_time.strftime(GERRIT_TIME_SHORT_FMT)
-    result['message_meta'] = json.loads(self.message_meta)
+    if self.message_meta is None:
+      result['message_meta'] = {}
+    else:
+      result['message_meta'] = json.loads(self.message_meta)
     return result
+
+  @classmethod
+  def from_dict(cls, poll_id, project, branch,  # pylint: disable=W0613,R0913
+                change_id, subject, current_revision, owner, queue_time,
+                queue_score, message_meta=None, **kwargs):
+    if message_meta is None:
+      meta_str = ''
+    else:
+      meta_str = json.dumps(message_meta)
+
+    return cls(project=project,
+               branch=branch,
+               change_id=change_id,
+               subject=subject,
+               current_revision=current_revision,
+               owner_id=owner.get('_account_id', -1),
+               message_meta=meta_str,
+               queue_time=queue_time,
+               queue_score=queue_score,
+               poll_id=poll_id,
+               priority=message_meta.get('Priority', 100))
 
 
 class QueueSpec(Base):  # pylint: disable=no-init

@@ -3,21 +3,19 @@
 from __future__ import print_function
 import argparse
 import inspect
+import io
 import json
 import logging
 import os
 import re
 import sys
 import traceback
-import zipfile
 
-import jinja2
-
+import gerrit_mq
 from gerrit_mq import common
 from gerrit_mq import daemon
 from gerrit_mq import functions
 from gerrit_mq import orm
-
 
 def class_to_cmd(name):
   intermediate = re.sub('(.)([A-Z][a-z]+)', r'\1-\2', name)
@@ -29,6 +27,8 @@ class Command(object):
   Base class making it a little easier to set up a complex argparse tree by
   specifying features of a command as memebers of a class.
   """
+
+  default_log_level = 'info'
 
   @staticmethod
   def setup_parser(subparser):
@@ -78,8 +78,11 @@ class PollGerrit(Command):
   @classmethod
   def run_args(cls, config, args):
     gerrit = common.GerritRest(**config['gerrit.rest'])
-    session_factory = orm.init_sql(config['db_url'])
-    functions.poll_gerrit(gerrit, session_factory(), args.poll_id)
+    sql = orm.init_sql(config['db_url'])()
+
+    if args.poll_id == 0:
+      args.poll_id = functions.get_next_poll_id(sql)
+    functions.poll_gerrit(gerrit, sql, args.poll_id)
 
 
 class GetQueue(Command):
@@ -100,8 +103,9 @@ class GetQueue(Command):
   @classmethod
   def run_args(cls, config, args):
     session_factory = orm.init_sql(config['db_url'])
-    queue = functions.get_queue(session_factory(), args.project_filter,
-                                args.branch_filter, args.offset, args.limit)
+    _, queue = functions.get_queue(session_factory(), args.project_filter,
+                                   args.branch_filter, args.offset, args.limit)
+    queue = [item.as_dict() for item in queue]
     json.dump(queue, sys.stdout, indent=2, separators=(',', ': '))
     sys.stdout.write('\n')
 
@@ -130,6 +134,8 @@ class Webfront(Command):
   """
   Start the merge-queue master service.
   """
+
+  default_log_level = 'warn'
 
   @classmethod
   def run_args(cls, config, args):
@@ -170,9 +176,15 @@ class Daemon(Command):
     session_factory = orm.init_sql(config['db_url'])
     app = daemon.MergeDaemon(config, gerrit, session_factory())
 
+    watch_manifest = functions.get_watch_manifest()
+    realpath_config = os.path.realpath(args.config_path)
+    config_manifest = [(realpath_config, os.path.getmtime(realpath_config))]
+
+    watch_manifest = sorted(watch_manifest + config_manifest)
+
     exit_code = 1
     try:
-      app.run()
+      app.run(watch_manifest)
       exit_code = 0
     except:  # pylint: disable=bare-except
       logging.exception('Exiting daemon due to uncought exception')
@@ -180,28 +192,6 @@ class Daemon(Command):
     sys.exit(exit_code)
 
 
-class ZipFileLoader(jinja2.BaseLoader):
-  """
-  Implements a template loader which reads templates from a zipfile
-  """
-
-  def __init__(self, zipfile_path, base_directory):
-    self.zipf = zipfile.ZipFile(zipfile_path)
-    self.basedir = base_directory
-
-  def __del__(self):
-    self.zipf.close()
-
-  def get_source(self, environment, template):
-    try:
-      fullpath = '{}/{}'.format(self.basedir, template)
-      with self.zipf.open(fullpath) as fileobj:
-        source = fileobj.read()
-    except IOError:
-      raise jinja2.TemplateNotFound(template,
-                                    message='Fullpath: {}'.format(fullpath))
-
-    return (source, None, lambda: False)
 
 
 class RenderTemplates(Command):
@@ -211,66 +201,20 @@ class RenderTemplates(Command):
 
   @staticmethod
   def setup_parser(subparser):
-    subparser.add_argument('outdir',
+    subparser.add_argument('outdir', nargs='?', default=None,
                            help="where to write the rendered files")
 
   @classmethod
   def run_args(cls, config, args):  # pylint: disable=unused-argument
+    if args.outdir is None:
+      args.outdir = config['webfront.pagedir_path']
+
     try:
       os.makedirs(args.outdir)
     except OSError:
       pass
 
-    pardir = os.path.dirname(__file__)
-    pardir = os.path.dirname(pardir)
-
-    logging.info('pardir: %s', pardir)
-
-    if zipfile.is_zipfile(pardir):
-      logging.info('reading data from zipfile')
-      loader = ZipFileLoader(pardir, 'gerrit_mq/templates')
-    else:
-      logging.info('reading data from package directory')
-      loader = jinja2.PackageLoader('gerrit_mq', 'templates')
-
-    env = jinja2.Environment(loader=loader)
-
-    for page in ['daemon', 'detail', 'history', 'index', 'queue']:
-      template_name = '{}.html.tpl'.format(page)
-      template = env.get_template(template_name)
-      outpath = os.path.join(args.outdir, '{}.html'.format(page))
-      with open(outpath, 'w') as outfile:
-        outfile.write(template.render())  # pylint: disable=no-member
-        outfile.write('\n')
-
-    script_path = 'gerrit_mq/templates/script.js.tpl'
-    style_path = 'gerrit_mq/templates/style.css'
-
-    if zipfile.is_zipfile(pardir):
-      with zipfile.ZipFile(pardir) as zfile:
-        with zfile.open(script_path) as infile:
-          js_lines = infile.readlines()
-        with zfile.open(style_path) as infile:
-          style_content = infile.read()
-    else:
-      with open(os.path.join(pardir, script_path)) as infile:
-        js_lines = infile.readlines()
-      with open(os.path.join(pardir, style_path)) as infile:
-        style_content = infile.read()
-
-    outpath = os.path.join(args.outdir, 'script.js')
-    with open(outpath, 'w') as outfile:
-      for line in js_lines:
-        if line.startswith('var kGerritURL'):
-          outfile.write('var kGerritURL = "{}";\n'
-                        .format(config['gerrit.rest.url']))
-        else:
-          outfile.write(line)
-
-    outpath = os.path.join(args.outdir, 'style.css')
-    with open(outpath, 'w') as outfile:
-      outfile.write(style_content)
-
+    functions.render_templates(config, args.outdir)
 
 class SyncAccountTable(Command):
   """
@@ -291,7 +235,7 @@ class MigrateDatabase(Command):
 
   @staticmethod
   def setup_parser(subparser):
-    db_versions = ['0.1.0', '0.2.0']
+    db_versions = ['0.1.0', '0.2.0', '0.2.1']
     subparser.add_argument('input_path',
                            help='Path to the source database')
     subparser.add_argument('output_path',
@@ -306,6 +250,7 @@ class MigrateDatabase(Command):
     gerrit = common.GerritRest(**config['gerrit.rest'])
     functions.migrate_db(gerrit, args.input_path, args.from_version,
                          args.output_path, args.to_version)
+
 
 class FetchMissingAccountInfo(Command):
   """
@@ -333,13 +278,9 @@ class GzipOldLogs(Command):
     subparser.add_argument('dest_dir',
                            help='Directory containing new gzipped logs')
 
-
   @classmethod
   def run_args(cls, config, args):
     functions.gzip_old_logs(args.source_dir, args.dest_dir)
-
-
-
 
 
 def iter_command_classes():
@@ -349,8 +290,9 @@ def iter_command_classes():
 
   for _, cmd_class in globals().iteritems():
     if (inspect.isclass(cmd_class)
-        and issubclass(cmd_class, Command)
-        and cmd_class is not Command):
+            # pylint: disable=bad-continuation
+            and issubclass(cmd_class, Command)
+            and cmd_class is not Command):
       yield cmd_class
 
 
@@ -359,9 +301,11 @@ def main(argv):
   parser.add_argument('-c', '--config-path',
                       default=os.path.expanduser('~/.gerrit-mq.py'),
                       help='path to config file')
-  parser.add_argument('-l', '--log-level', default='info',
+  parser.add_argument('-l', '--log-level', default=None,
                       choices=['debug', 'info', 'warning', 'error'])
-  subparsers = parser.add_subparsers(dest='command')
+  parser.add_argument('-v', '--version', action='version',
+                      version=gerrit_mq.VERSION)
+  subparsers = parser.add_subparsers(dest='command', metavar='CMD')
   commands = [init() for init in iter_command_classes()]
 
   for command in commands:
@@ -378,7 +322,12 @@ def main(argv):
   # set up main logger, which logs everything. We'll leave this one logging
   # to the console
   format_str = '%(levelname)-8s %(filename)s [%(lineno)-3s] : %(message)s'
-  logging.basicConfig(level=getattr(logging, args.log_level.upper()),
+  if args.log_level is None:
+    log_level = 'info'
+  else:
+    log_level = args.log_level
+
+  logging.basicConfig(level=getattr(logging, log_level.upper()),
                       format=format_str,
                       datefmt='%Y-%m-%d %H:%M:%S',
                       filemode='w')
@@ -387,19 +336,20 @@ def main(argv):
       "The requested config file {} does not exist".format(args.config_path))
 
   try:
-    globals_ = globals()
-    execfile(args.config_path, globals_)
+    globals_ = {}
+    with io.open(args.config_path, 'r', encoding='utf-8') as infile:
+      exec(infile.read(), globals_) # pylint: disable=W0122
+
   except:  # pylint: disable=bare-except
     traceback.print_exc()
     sys.stderr.write('Failed to execute config file\n')
     return 1
 
-  assert 'CONFIG' in globals_, (
-      "Configuration file must define CONFIG dictionary")
-
-  config = common.ConfigDict(globals_['CONFIG'])
+  config = common.ConfigDict(globals_)
   for command in commands:
     if args.command == command.get_cmd():
+      if args.log_level is None:
+        logging.getLogger('').setLevel(command.default_log_level.upper())
       return command.run_args(config, args)
 
 

@@ -298,7 +298,7 @@ def start_container(debug, dry_run):
             different entry point, as a non-daemon container, etc.
   """
   command = ['docker', 'run', '-ti',
-             '-p', '8443:8443',
+             '-p', '8081:8081',
              '-p', '29418:29418',
              '-v', '/home/gerrit2/gerrit',
              '--name', CONTAINER_NAME]
@@ -313,7 +313,7 @@ def start_container(debug, dry_run):
   print('Running command:')
   print('    ' + ' '.join(command))
   if not dry_run:
-    print('Web interface on https://localhost:8443')
+    print('Web interface on http://localhost:8081')
     print('Admin ssh at ssh -i <build_dir>/docker/id_rsa -p 29418 '
           'admin@localhost')
     subprocess.check_call(command)
